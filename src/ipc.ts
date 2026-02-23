@@ -14,6 +14,9 @@ import { AvailableGroup } from './container-runner.js';
 import { createTask, deleteTask, getTaskById, updateTask } from './db.js';
 import { logger } from './logger.js';
 import { RegisteredGroup } from './types.js';
+import { SecurityAuditLogger, AuditEventType } from './security-audit.js';
+import { InputSanitizer } from './input-sanitizer.js';
+import { globalRateLimiter } from './rate-limiter.js';
 
 export interface IpcDeps {
   sendMessage: (jid: string, text: string) => Promise<void>;
@@ -68,21 +71,101 @@ export function startIpcWatcher(deps: IpcDeps): void {
           const messageFiles = fs
             .readdirSync(messagesDir)
             .filter((f) => f.endsWith('.json'));
+
           for (const file of messageFiles) {
+            // Check rate limiting per message (not per poll)
+            if (!globalRateLimiter.checkMessageSend(sourceGroup)) {
+              logger.warn({ sourceGroup, file }, 'Message send rate limited');
+              SecurityAuditLogger.logEvent({
+                timestamp: new Date().toISOString(),
+                eventType: AuditEventType.RATE_LIMIT_EXCEEDED,
+                groupFolder: sourceGroup,
+                severity: 'warning',
+                details: { reason: 'Message send rate limited', file },
+              });
+              continue; // Skip this message, try again later
+            }
+            globalRateLimiter.recordMessageSend(sourceGroup);
             const filePath = path.join(messagesDir, file);
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              
+              // Validate message structure
+              const validation = InputSanitizer.validateIpcMessage(data, sourceGroup);
+              if (!validation.isValid) {
+                logger.warn(
+                  { file, sourceGroup, errors: validation.errors },
+                  'IPC message validation failed',
+                );
+                SecurityAuditLogger.logEvent({
+                  timestamp: new Date().toISOString(),
+                  eventType: AuditEventType.MESSAGE_VALIDATION_FAILED,
+                  groupFolder: sourceGroup,
+                  severity: 'warning',
+                  details: { errors: validation.errors, file },
+                });
+                fs.unlinkSync(filePath);
+                continue;
+              }
+
               if (data.type === 'message' && data.chatJid && data.text) {
+                // Validate JID format
+                if (!InputSanitizer.validateJid(data.chatJid)) {
+                  logger.warn({ chatJid: data.chatJid, sourceGroup }, 'Invalid JID format');
+                  SecurityAuditLogger.logEvent({
+                    timestamp: new Date().toISOString(),
+                    eventType: AuditEventType.MESSAGE_VALIDATION_FAILED,
+                    groupFolder: sourceGroup,
+                    severity: 'warning',
+                    details: { reason: 'Invalid JID format', chatJid: data.chatJid },
+                  });
+                  fs.unlinkSync(filePath);
+                  continue;
+                }
+
                 // Authorization: verify this group can send to this chatJid
                 const targetGroup = registeredGroups[data.chatJid];
                 if (
                   isMain ||
                   (targetGroup && targetGroup.folder === sourceGroup)
                 ) {
+                  // Check for prompt injection before sending
+                  const injectionCheck = InputSanitizer.detectPromptInjection(data.text, sourceGroup);
+                  if (injectionCheck.isInjection) {
+                    logger.warn({
+                      chatJid: data.chatJid,
+                      sourceGroup,
+                      patterns: injectionCheck.injectionPatterns,
+                    }, 'Prompt injection detected in IPC message');
+                    SecurityAuditLogger.logEvent({
+                      timestamp: new Date().toISOString(),
+                      eventType: AuditEventType.MESSAGE_INJECTION_DETECTED,
+                      groupFolder: sourceGroup,
+                      severity: 'warning',
+                      details: {
+                        chatJid: data.chatJid,
+                        patterns: injectionCheck.injectionPatterns,
+                      },
+                    });
+                  }
+
                   await deps.sendMessage(
                     data.chatJid,
                     `${ASSISTANT_NAME}: ${data.text}`,
                   );
+
+                  // Audit log: Message sent
+                  SecurityAuditLogger.logEvent({
+                    timestamp: new Date().toISOString(),
+                    eventType: AuditEventType.IPC_MESSAGE_SENT,
+                    groupFolder: sourceGroup,
+                    severity: 'info',
+                    details: {
+                      chatJid: data.chatJid,
+                      textLength: data.text.length,
+                    },
+                  });
+
                   logger.info(
                     { chatJid: data.chatJid, sourceGroup },
                     'IPC message sent',
@@ -92,6 +175,19 @@ export function startIpcWatcher(deps: IpcDeps): void {
                     { chatJid: data.chatJid, sourceGroup },
                     'Unauthorized IPC message attempt blocked',
                   );
+
+                  // Audit log: Unauthorized access attempt
+                  SecurityAuditLogger.logEvent({
+                    timestamp: new Date().toISOString(),
+                    eventType: AuditEventType.IPC_UNAUTHORIZED_ACCESS,
+                    groupFolder: sourceGroup,
+                    severity: 'warning',
+                    details: {
+                      chatJid: data.chatJid,
+                      sourceGroup,
+                      reason: 'Unauthorized send attempt',
+                    },
+                  });
                 }
               }
               fs.unlinkSync(filePath);
@@ -122,10 +218,33 @@ export function startIpcWatcher(deps: IpcDeps): void {
           const taskFiles = fs
             .readdirSync(tasksDir)
             .filter((f) => f.endsWith('.json'));
+
           for (const file of taskFiles) {
+            // Check rate limiting per task (not per poll)
+            if (!globalRateLimiter.checkTaskExecution(sourceGroup)) {
+              logger.warn({ sourceGroup, file }, 'Task execution rate limited');
+              SecurityAuditLogger.logEvent({
+                timestamp: new Date().toISOString(),
+                eventType: AuditEventType.RATE_LIMIT_EXCEEDED,
+                groupFolder: sourceGroup,
+                severity: 'warning',
+                details: { reason: 'Task execution rate limited', file },
+              });
+              continue; // Skip this task, try again later
+            }
+            globalRateLimiter.recordTaskExecution(sourceGroup);
             const filePath = path.join(tasksDir, file);
             try {
               const data = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
+              
+              // Check IPC operation rate limiting
+              if (!globalRateLimiter.checkIpcOperation(sourceGroup)) {
+                logger.warn({ file, sourceGroup }, 'IPC operation rate limited');
+                fs.unlinkSync(filePath);
+                continue;
+              }
+              globalRateLimiter.recordIpcOperation(sourceGroup);
+
               // Pass source group identity to processTaskIpc for authorization
               await processTaskIpc(data, sourceGroup, isMain, deps);
               fs.unlinkSync(filePath);
@@ -207,6 +326,19 @@ export async function processTaskIpc(
             { sourceGroup, targetFolder },
             'Unauthorized schedule_task attempt blocked',
           );
+
+          // Audit log: Unauthorized task scheduling
+          SecurityAuditLogger.logEvent({
+            timestamp: new Date().toISOString(),
+            eventType: AuditEventType.IPC_UNAUTHORIZED_ACCESS,
+            groupFolder: sourceGroup,
+            severity: 'warning',
+            details: {
+              reason: 'Unauthorized task scheduling',
+              sourceGroup,
+              targetFolder,
+            },
+          });
           break;
         }
 
@@ -265,6 +397,23 @@ export async function processTaskIpc(
           status: 'active',
           created_at: new Date().toISOString(),
         });
+
+        // Audit log: Task execution
+        SecurityAuditLogger.logEvent({
+          timestamp: new Date().toISOString(),
+          eventType: AuditEventType.IPC_TASK_EXECUTED,
+          groupFolder: sourceGroup,
+          severity: 'info',
+          details: {
+            taskId,
+            action: 'schedule_task',
+            targetFolder,
+            scheduleType,
+            contextMode,
+            nextRun,
+          },
+        });
+
         logger.info(
           { taskId, sourceGroup, targetFolder, contextMode },
           'Task created via IPC',

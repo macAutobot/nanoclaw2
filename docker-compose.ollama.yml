@@ -1,0 +1,73 @@
+version: '3.8'
+
+services:
+  nanoclaw-ollama:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: nanoclaw:latest
+    container_name: nanoclaw-ollama-app
+    restart: "no"
+    
+    # Mount Docker socket to allow container management
+    # ⚠️ Docker socket mounting causes exit code 137 on Docker Desktop for Mac
+    # Running NanoClaw directly on host instead of in container
+    volumes:
+      # - /Users/dizzydevil/.docker/run/docker.sock:/var/run/docker.sock
+      - ./data:/app/data
+      - ./groups:/app/groups
+      - ./store:/app/store
+      - ./config-examples:/app/config-examples:ro
+      - ./.mcp.json:/app/.mcp.json
+    
+    # Environment variables for Ollama mode
+    environment:
+      - NODE_ENV=production
+      - CONTAINER_RUNTIME=docker
+      - AGENT_IMAGE=nanoclaw-agent-ollama:latest
+      - USE_OLLAMA=true
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      - OLLAMA_HOST=http://host.docker.internal:11434
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - TZ=UTC
+    
+    # Use .env file for additional config
+    env_file:
+      - .env
+    
+    # Network configuration
+    networks:
+      - nanoclaw-network
+    
+    # Add host.docker.internal for Ollama access
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    
+    # Security options
+    security_opt:
+      - no-new-privileges:true
+    
+    # Depends on Ollama being available
+    depends_on:
+      - agent-builder-ollama
+
+  # Agent container builder (Ollama version)
+  agent-builder-ollama:
+    build:
+      context: ./container
+      dockerfile: Dockerfile.ollama
+    image: nanoclaw-agent-ollama:latest
+    container_name: nanoclaw-agent-ollama-builder
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["exit 0"]
+    environment:
+      - OLLAMA_MODEL=${OLLAMA_MODEL:-qwen2.5-coder:14b}
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    networks:
+      - nanoclaw-network
+
+networks:
+  nanoclaw-network:
+    driver: bridge

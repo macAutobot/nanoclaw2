@@ -1,5 +1,6 @@
 import { ASSISTANT_NAME } from './config.js';
 import { Channel, NewMessage } from './types.js';
+import { InputSanitizer } from './input-sanitizer.js';
 
 export function escapeXml(s: string): string {
   return s
@@ -23,9 +24,19 @@ export function stripInternalTags(text: string): string {
 export function formatOutbound(channel: Channel, rawText: string): string {
   const text = stripInternalTags(rawText);
   if (!text) return '';
+  
+  // Validate message length  and content
+  const validation = InputSanitizer.validateMessageText(text, 'router');
+  if (!validation.isValid) {
+    // Log validation issues but still send sanitized content
+    console.warn('Message validation warnings:', validation.violations);
+  }
+  
+  // Use sanitized version if it was modified during validation
+  const finalText = validation.sanitized;
   const prefix =
     channel.prefixAssistantName !== false ? `${ASSISTANT_NAME}: ` : '';
-  return `${prefix}${text}`;
+  return `${prefix}${finalText}`;
 }
 
 export function routeOutbound(
@@ -33,6 +44,11 @@ export function routeOutbound(
   jid: string,
   text: string,
 ): Promise<void> {
+  // Validate JID format for security
+  if (!InputSanitizer.validateJid(jid)) {
+    throw new Error(`Invalid JID format: ${jid}`);
+  }
+
   const channel = channels.find((c) => c.ownsJid(jid) && c.isConnected());
   if (!channel) throw new Error(`No channel for JID: ${jid}`);
   return channel.sendMessage(jid, text);

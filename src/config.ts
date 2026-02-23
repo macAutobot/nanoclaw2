@@ -20,8 +20,14 @@ export const GROUPS_DIR = path.resolve(PROJECT_ROOT, 'groups');
 export const DATA_DIR = path.resolve(PROJECT_ROOT, 'data');
 export const MAIN_GROUP_FOLDER = 'main';
 
-export const CONTAINER_IMAGE =
-  process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
+// Container runtime: 'docker' or 'container' (Apple Container)
+export const CONTAINER_RUNTIME = process.env.CONTAINER_RUNTIME || 'container';
+export const AGENT_IMAGE = process.env.AGENT_IMAGE || process.env.CONTAINER_IMAGE || 'nanoclaw-agent:latest';
+export const CONTAINER_IMAGE = AGENT_IMAGE;
+
+// Ollama configuration
+export const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://host.docker.internal:11434';
+export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:14b';
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,

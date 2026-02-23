@@ -4,6 +4,7 @@ import path from 'path';
 
 import {
   ASSISTANT_NAME,
+  CONTAINER_RUNTIME,
   DATA_DIR,
   IDLE_TIMEOUT,
   MAIN_GROUP_FOLDER,
@@ -38,6 +39,10 @@ import { formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { NewMessage, RegisteredGroup } from './types.js';
 import { logger } from './logger.js';
+import { SessionEncryption } from './session-encryption.js';
+import { EnhancedSecretRotation } from './enhanced-secret-rotation.js';
+import { SecurityAuditLogger } from './security-audit.js';
+import { globalOllamaTLS } from './ollama-tls.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
@@ -392,69 +397,165 @@ function recoverPendingMessages(): void {
 }
 
 function ensureContainerSystemRunning(): void {
-  try {
-    execSync('container system status', { stdio: 'pipe' });
-    logger.debug('Apple Container system already running');
-  } catch {
-    logger.info('Starting Apple Container system...');
+  if (CONTAINER_RUNTIME === 'docker') {
+    // Docker runtime: verify Docker is accessible (non-fatal check)
     try {
-      execSync('container system start', { stdio: 'pipe', timeout: 30000 });
-      logger.info('Apple Container system started');
-    } catch (err) {
-      logger.error({ err }, 'Failed to start Apple Container system');
-      console.error(
-        '\n╔════════════════════════════════════════════════════════════════╗',
-      );
-      console.error(
-        '║  FATAL: Apple Container system failed to start                 ║',
-      );
-      console.error(
-        '║                                                                ║',
-      );
-      console.error(
-        '║  Agents cannot run without Apple Container. To fix:           ║',
-      );
-      console.error(
-        '║  1. Install from: https://github.com/apple/container/releases ║',
-      );
-      console.error(
-        '║  2. Run: container system start                               ║',
-      );
-      console.error(
-        '║  3. Restart NanoClaw                                          ║',
-      );
-      console.error(
-        '╚════════════════════════════════════════════════════════════════╝\n',
-      );
-      throw new Error('Apple Container system is required but failed to start');
-    }
-  }
-
-  // Kill and clean up orphaned NanoClaw containers from previous runs
-  try {
-    const output = execSync('container ls --format json', {
-      stdio: ['pipe', 'pipe', 'pipe'],
-      encoding: 'utf-8',
-    });
-    const containers: { status: string; configuration: { id: string } }[] = JSON.parse(output || '[]');
-    const orphans = containers
-      .filter((c) => c.status === 'running' && c.configuration.id.startsWith('nanoclaw-'))
-      .map((c) => c.configuration.id);
-    for (const name of orphans) {
+      execSync('docker info', { stdio: 'pipe', timeout: 5000 });
+      logger.debug('Docker runtime available');
+      
+      // Clean up orphaned Docker containers from previous runs
       try {
-        execSync(`container stop ${name}`, { stdio: 'pipe' });
-      } catch { /* already stopped */ }
+        const output = execSync('docker ps -a --filter "name=nanoclaw-" --format "{{.Names}}"', {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          encoding: 'utf-8',
+        });
+        const orphans = output.trim().split('\n').filter(Boolean);
+        for (const name of orphans) {
+          try {
+            execSync(`docker rm -f ${name}`, { stdio: 'pipe' });
+          } catch { /* already removed */ }
+        }
+        if (orphans.length > 0) {
+          logger.info({ count: orphans.length, names: orphans }, 'Cleaned up orphaned Docker containers');
+        }
+      } catch (err) {
+        logger.warn({ err }, 'Failed to clean up orphaned Docker containers');
+      }
+    } catch (err) {
+      // If Docker is not accessible, just warn - it might work when we actually try to run a container
+      logger.warn({ err }, 'Docker not accessible at startup (will retry when running containers)');
     }
-    if (orphans.length > 0) {
-      logger.info({ count: orphans.length, names: orphans }, 'Stopped orphaned containers');
+  } else {
+    // Apple Container runtime
+    try {
+      execSync('container system status', { stdio: 'pipe' });
+      logger.debug('Apple Container system already running');
+    } catch {
+      logger.info('Starting Apple Container system...');
+      try {
+        execSync('container system start', { stdio: 'pipe', timeout: 30000 });
+        logger.info('Apple Container system started');
+      } catch (err) {
+        logger.error({ err }, 'Failed to start Apple Container system');
+        console.error(
+          '\n╔════════════════════════════════════════════════════════════════╗',
+        );
+        console.error(
+          '║  FATAL: Apple Container system failed to start                 ║',
+        );
+        console.error(
+          '║                                                                ║',
+        );
+        console.error(
+          '║  Agents cannot run without Apple Container. To fix:           ║',
+        );
+        console.error(
+          '║  1. Install from: https://github.com/apple/container/releases ║',
+        );
+        console.error(
+          '║  2. Run: container system start                               ║',
+        );
+        console.error(
+          '║  3. Restart NanoClaw                                          ║',
+        );
+        console.error(
+          '╚════════════════════════════════════════════════════════════════╝\n',
+        );
+        throw new Error('Apple Container system is required but failed to start');
+      }
     }
-  } catch (err) {
-    logger.warn({ err }, 'Failed to clean up orphaned containers');
+
+    // Kill and clean up orphaned NanoClaw containers from previous runs
+    try {
+      const output = execSync('container ls --format json', {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        encoding: 'utf-8',
+      });
+      const containers: { status: string; configuration: { id: string } }[] = JSON.parse(output || '[]');
+      const orphans = containers
+        .filter((c) => c.status === 'running' && c.configuration.id.startsWith('nanoclaw-'))
+        .map((c) => c.configuration.id);
+      for (const name of orphans) {
+        try {
+          execSync(`container stop ${name}`, { stdio: 'pipe' });
+        } catch { /* already stopped */ }
+      }
+      if (orphans.length > 0) {
+        logger.info({ count: orphans.length, names: orphans }, 'Stopped orphaned containers');
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to clean up orphaned containers');
+    }
   }
 }
 
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
+  
+  // Initialize security features
+  logger.info('Initializing security features...');
+  
+  // Setup Docker network isolation
+  if (CONTAINER_RUNTIME === 'docker') {
+    try {
+      // Check if isolated network exists
+      execSync('docker network inspect nanoclaw-isolated', { stdio: 'pipe' });
+      logger.info('✓ Docker network isolation configured');
+    } catch {
+      logger.warn('⚠️  Docker isolated network not found. Run ./setup-network-isolation.sh');
+    }
+  }
+  
+  // Initialize Ollama TLS
+  const ollamaTLSEnabled = globalOllamaTLS.isEnabled();
+  if (ollamaTLSEnabled) {
+    const valid = await globalOllamaTLS.verifyConfiguration();
+    if (valid) {
+      logger.info('✓ Ollama TLS encryption enabled');
+    } else {
+      logger.warn('⚠️  Ollama TLS configuration invalid, falling back to HTTP');
+      globalOllamaTLS.disable();
+    }
+  } else {
+    logger.info('ℹ️  Ollama TLS not enabled (traffic unencrypted)');
+    logger.info('   Run: npm run setup-ollama-tls to enable');
+  }
+  
+  // Initialize session encryption
+  const authStorePath = path.join(process.cwd(), 'auth-store');
+  const sessionEncryption = new SessionEncryption(authStorePath);
+  
+  // Check if auth store needs encryption
+  if (fs.existsSync(authStorePath) && !sessionEncryption.isEncrypted()) {
+    logger.info('Encrypting WhatsApp auth store...');
+    await sessionEncryption.encryptAuthStore();
+    logger.info('✓ Auth store encrypted');
+  } else if (sessionEncryption.isEncrypted()) {
+    logger.info('✓ Auth store is encrypted');
+    // Decrypt for use (will be re-encrypted on shutdown)
+    await sessionEncryption.decryptAuthStore();
+  }
+  
+  // Initialize enhanced secret rotation
+  const secretRotation = new EnhancedSecretRotation(authStorePath);
+  
+  // Periodic security check (every 5 minutes)
+  setInterval(async () => {
+    try {
+      await secretRotation.checkAndRotate(MAIN_GROUP_FOLDER);
+    } catch (err) {
+      logger.error({ err }, 'Error during security check');
+    }
+  }, 5 * 60 * 1000);
+  
+  // Cleanup old audit logs
+  try {
+    SecurityAuditLogger.purgeOldLogs(30); // 30 days retention
+    logger.info('Audit log cleanup completed');
+  } catch (err) {
+    logger.warn({ err }, 'Failed to cleanup old audit logs');
+  }
+  
   initDatabase();
   logger.info('Database initialized');
   loadState();
@@ -462,6 +563,13 @@ async function main(): Promise<void> {
   // Graceful shutdown handlers
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
+    
+    // Re-encrypt auth store before shutdown
+    if (fs.existsSync(authStorePath) && !sessionEncryption.isEncrypted()) {
+      logger.info('Re-encrypting auth store...');
+      await sessionEncryption.encryptAuthStore();
+    }
+    
     await queue.shutdown(10000);
     await whatsapp.disconnect();
     process.exit(0);

@@ -10,10 +10,13 @@ import path from 'path';
 import {
   CONTAINER_IMAGE,
   CONTAINER_MAX_OUTPUT_SIZE,
+  CONTAINER_RUNTIME,
   CONTAINER_TIMEOUT,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
+  OLLAMA_HOST,
+  OLLAMA_MODEL,
 } from './config.js';
 import { logger } from './logger.js';
 import { validateAdditionalMounts } from './mount-security.js';
@@ -209,15 +212,49 @@ function buildVolumeMounts(
 function buildContainerArgs(mounts: VolumeMount[], containerName: string): string[] {
   const args: string[] = ['run', '-i', '--rm', '--name', containerName];
 
-  // Apple Container: --mount for readonly, -v for read-write
-  for (const mount of mounts) {
-    if (mount.readonly) {
-      args.push(
-        '--mount',
-        `type=bind,source=${mount.hostPath},target=${mount.containerPath},readonly`,
-      );
-    } else {
-      args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
+  // Network isolation for Docker (Apple Container doesn't support custom networks)
+  if (CONTAINER_RUNTIME === 'docker') {
+    // Use isolated network with no internet access
+    // WhatsApp runs in main service which has internet access
+    args.push('--network', 'nanoclaw-isolated');
+    
+    // Add host.docker.internal for Ollama access even on isolated network
+    args.push('--add-host', 'host.docker.internal:host-gateway');
+  }
+
+  // Resource limits and security options (Docker-specific)
+  if (CONTAINER_RUNTIME === 'docker') {
+    args.push('--memory', '2g');  // 2GB RAM limit
+    args.push('--cpus', '2');      // 2 CPU cores max
+    args.push('--pids-limit', '100'); // Max 100 processes
+    args.push('--security-opt', 'no-new-privileges');  // Prevent privilege escalation
+    args.push('--cap-drop', 'ALL');  // Drop all capabilities
+    args.push('--cap-add', 'NET_ADMIN');  // Only allow network config (for DNS)
+  }
+
+  // Pass Ollama environment variables to container
+  args.push('-e', `OLLAMA_HOST=${OLLAMA_HOST}`);
+  args.push('-e', `OLLAMA_MODEL=${OLLAMA_MODEL}`);
+
+  if (CONTAINER_RUNTIME === 'docker') {
+    // Docker: use -v for all mounts, add :ro suffix for readonly
+    for (const mount of mounts) {
+      const mountArg = mount.readonly
+        ? `${mount.hostPath}:${mount.containerPath}:ro`
+        : `${mount.hostPath}:${mount.containerPath}`;
+      args.push('-v', mountArg);
+    }
+  } else {
+    // Apple Container: --mount for readonly, -v for read-write
+    for (const mount of mounts) {
+      if (mount.readonly) {
+        args.push(
+          '--mount',
+          `type=bind,source=${mount.hostPath},target=${mount.containerPath},readonly`,
+        );
+      } else {
+        args.push('-v', `${mount.hostPath}:${mount.containerPath}`);
+      }
     }
   }
 
@@ -269,7 +306,8 @@ export async function runContainerAgent(
   fs.mkdirSync(logsDir, { recursive: true });
 
   return new Promise((resolve) => {
-    const container = spawn('container', containerArgs, {
+    const containerCommand = CONTAINER_RUNTIME === 'docker' ? 'docker' : 'container';
+    const container = spawn(containerCommand, containerArgs, {
       stdio: ['pipe', 'pipe', 'pipe'],
     });
 

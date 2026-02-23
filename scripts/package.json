@@ -1,0 +1,14 @@
+{{
+
+
+
+
+
+
+
+}  "type": "module"  "bin": "./setup-ollama-tls.mjs",  "description": "Setup script for Ollama TLS encryption",  "version": "1.0.0",  "name": "setup-ollama-tls",  "name": "setup-ollama-tls",
+  "version": "1.0.0",
+  "description": "Setup TLS encryption for Ollama",
+  "main": "setup-ollama-tls.mjs",
+  "type": "module"
+}
