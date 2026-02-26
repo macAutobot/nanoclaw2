@@ -12,7 +12,8 @@ import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import readline from 'readline';
 
-import makeWASocket, {
+import {
+  makeWASocket,
   Browsers,
   DisconnectReason,
   makeCacheableSignalKeyStore,
