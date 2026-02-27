@@ -274,6 +274,117 @@ Use available_groups.json to find the JID for a group. The folder name should be
   },
 );
 
+// ---------------------------------------------------------------------------
+// RAG tools
+// ---------------------------------------------------------------------------
+
+const RAG_SERVER_URL =
+  process.env.RAG_SERVER_URL ?? 'http://host.docker.internal:7700';
+
+server.tool(
+  'rag_search',
+  `Search the codebase and memory with semantic similarity.
+
+Use this BEFORE answering architecture questions or writing code that touches
+existing modules. Returns the most relevant chunks from indexed source files,
+docs, and conversation history.
+
+Examples:
+  rag_search({ query: "how does IPC work between host and container" })
+  rag_search({ query: "where is the message loop defined" })
+  rag_search({ query: "db schema for scheduled tasks" })`,
+  {
+    query: z.string().describe('Natural language question or description of what you are looking for'),
+    limit: z.number().int().min(1).max(20).optional().default(6).describe('Number of results to return (default 6)'),
+  },
+  async (args) => {
+    try {
+      const res = await fetch(`${RAG_SERVER_URL}/search`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: args.query, limit: args.limit }),
+        signal: AbortSignal.timeout(10_000),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        return {
+          content: [{ type: 'text' as const, text: `RAG search failed: HTTP ${res.status} ${body}` }],
+          isError: true,
+        };
+      }
+
+      const data = (await res.json()) as {
+        results: Array<{ source_path: string; content: string; score: number }>;
+      };
+
+      if (data.results.length === 0) {
+        return {
+          content: [{ type: 'text' as const, text: 'No results found. The index may still be building — try again in a moment or rephrase the query.' }],
+        };
+      }
+
+      const formatted = data.results
+        .map(
+          (r) =>
+            `[Source: ${r.source_path} | Score: ${r.score.toFixed(3)}]\n${r.content}`,
+        )
+        .join('\n\n---\n\n');
+
+      return {
+        content: [{ type: 'text' as const, text: formatted }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `RAG search error: ${String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
+server.tool(
+  'rag_index',
+  `Add or update a file in the RAG index so future rag_search calls find it.
+
+Call this after creating or significantly editing a file so the index stays
+current. Pass the relative path and the full file content.`,
+  {
+    path: z
+      .string()
+      .describe('Relative path from project root (e.g., "src/rag.ts" or "groups/main/CLAUDE.md")'),
+    content: z.string().describe('Full content of the file to index'),
+  },
+  async (args) => {
+    try {
+      const res = await fetch(`${RAG_SERVER_URL}/index`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ path: args.path, content: args.content }),
+        signal: AbortSignal.timeout(30_000),
+      });
+
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        return {
+          content: [{ type: 'text' as const, text: `RAG index failed: HTTP ${res.status} ${body}` }],
+          isError: true,
+        };
+      }
+
+      const data = (await res.json()) as { chunks: number };
+      return {
+        content: [{ type: 'text' as const, text: `Indexed ${args.path} → ${data.chunks} chunks.` }],
+      };
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: `RAG index error: ${String(err)}` }],
+        isError: true,
+      };
+    }
+  },
+);
+
 // Start the stdio transport
 const transport = new StdioServerTransport();
 await server.connect(transport);

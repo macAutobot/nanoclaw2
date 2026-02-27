@@ -35,6 +35,8 @@ import {
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
+import { startRagServer } from './rag-server.js';
+import { indexFile } from './rag.js';
 import { formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { NewMessage, RegisteredGroup } from './types.js';
@@ -489,6 +491,55 @@ function ensureContainerSystemRunning(): void {
   }
 }
 
+// ---------------------------------------------------------------------------
+// Initial RAG index: runs on startup, non-blocking
+// ---------------------------------------------------------------------------
+
+const RAG_GLOB_ROOTS: Array<{ dir: string; exts: string[] }> = [
+  { dir: 'src', exts: ['.ts'] },
+  { dir: 'container/agent-runner/src', exts: ['.ts'] },
+  { dir: 'container/skills', exts: ['.md'] },
+  { dir: 'groups', exts: ['.md'] },
+  { dir: 'docs', exts: ['.md'] },
+];
+
+const SKIP_DIRS_SET = new Set(['node_modules', '.git', 'dist', 'auth-store', '__pycache__']);
+const MAX_RAG_FILE_BYTES = 100 * 1024;
+
+function* walkRagDir(root: string, exts: string[]): Generator<string> {
+  if (!fs.existsSync(root)) return;
+  for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
+    if (SKIP_DIRS_SET.has(entry.name)) continue;
+    const full = path.join(root, entry.name);
+    if (entry.isDirectory()) {
+      yield* walkRagDir(full, exts);
+    } else if (exts.some((e) => entry.name.endsWith(e))) {
+      yield full;
+    }
+  }
+}
+
+async function runInitialRagIndex(): Promise<void> {
+  const projectRoot = process.cwd();
+  let total = 0;
+  for (const { dir, exts } of RAG_GLOB_ROOTS) {
+    const absDir = path.join(projectRoot, dir);
+    for (const filePath of walkRagDir(absDir, exts)) {
+      try {
+        const stat = fs.statSync(filePath);
+        if (stat.size > MAX_RAG_FILE_BYTES) continue;
+        const content = fs.readFileSync(filePath, 'utf-8');
+        const relPath = path.relative(projectRoot, filePath);
+        await indexFile(relPath, content);
+        total++;
+      } catch {
+        // skip unreadable files silently
+      }
+    }
+  }
+  logger.info({ files: total }, '[rag] initial index complete');
+}
+
 async function main(): Promise<void> {
   ensureContainerSystemRunning();
   
@@ -606,6 +657,13 @@ async function main(): Promise<void> {
     getAvailableGroups,
     writeGroupsSnapshot: (gf, im, ag, rj) => writeGroupsSnapshot(gf, im, ag, rj),
   });
+
+  // Start RAG server and run initial codebase index in background
+  await startRagServer();
+  runInitialRagIndex().catch((err) =>
+    logger.warn({ err }, '[rag] initial index failed — run npm run index-rag manually'),
+  );
+
   queue.setProcessMessagesFn(processGroupMessages);
   recoverPendingMessages();
   startMessageLoop();

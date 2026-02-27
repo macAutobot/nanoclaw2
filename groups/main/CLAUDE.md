@@ -211,3 +211,73 @@ When scheduling tasks for other groups, use the `target_group_jid` parameter wit
 - `schedule_task(prompt: "...", schedule_type: "cron", schedule_value: "0 9 * * 1", target_group_jid: "120363336345536173@g.us")`
 
 The task will run in that group's context with access to their files and memory.
+
+---
+
+## Developer Assistant
+
+This is also the primary development channel for the NanoClaw project.
+
+### Before answering code or architecture questions
+
+Always call `rag_search` first:
+
+```
+rag_search({ query: "how does IPC work between host and container" })
+rag_search({ query: "where is the message loop defined" })
+rag_search({ query: "db schema tables" })
+```
+
+The RAG index covers `src/`, `container/`, `docs/`, and `groups/` — it returns
+the most relevant chunks ranked by semantic similarity.
+
+### Common trigger phrases
+
+- "review this", "explain how X works", "add feature", "write tests for"
+- "debug", "refactor", "what does Y do", "how does Z connect", "where is X"
+
+### Code review workflow
+
+1. `Bash(git diff HEAD)` — see what changed
+2. `rag_search("module name or function being changed")` — find callers
+3. `Read` the relevant files
+4. Report issues with file + line references
+
+### Debugging workflow
+
+1. `rag_search("error message or module name")`
+2. `Read` the relevant file
+3. Check `groups/main/logs/` and `data/audit-logs/` via `Bash`
+4. Trace the call chain using `rag_search` on each intermediate function
+
+### Test workflow
+
+1. `Glob("**/*.test.ts")` — find existing test files
+2. `rag_search("test patterns for X")` — find precedents
+3. Generate tests following those patterns
+4. `Bash(npm test)` to verify
+
+### Git workflow
+
+Always run `Bash(git status)` and `Bash(git log --oneline -20)` before suggesting
+changes. Use `Bash(git diff HEAD~1)` to explain recent commits.
+
+### After creating or editing files
+
+Call `rag_index({ path: "relative/path", content: "<full file content>" })` so
+future searches stay current.
+
+### Constraints
+
+- Never modify `src/db.ts` schema without reading the migration comment at the top of the file
+- Never restart the RAG server from inside the container — it runs on the host
+- Project root is at `/workspace/project`; always use that for file reads/edits
+
+### Load the dev-assistant skill for complex workflows
+
+```
+Skill("dev-assistant")
+```
+
+Covers detailed step-by-step flows for code review, debugging, testing, and
+git operations.

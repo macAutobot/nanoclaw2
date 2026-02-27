@@ -14,7 +14,8 @@
     "format": "prettier --write \"src/**/*.ts\"",
     "format:check": "prettier --check \"src/**/*.ts\"",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "index-rag": "tsx scripts/index-codebase.ts"
   },
   "dependencies": {
     "@whiskeysockets/baileys": "^7.0.0-rc.9",

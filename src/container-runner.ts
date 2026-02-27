@@ -235,6 +235,7 @@ function buildContainerArgs(mounts: VolumeMount[], containerName: string): strin
   // Pass Ollama environment variables to container
   args.push('-e', `OLLAMA_HOST=${OLLAMA_HOST}`);
   args.push('-e', `OLLAMA_MODEL=${OLLAMA_MODEL}`);
+  args.push('-e', `RAG_SERVER_URL=${process.env.RAG_SERVER_URL ?? 'http://host.docker.internal:7700'}`);
 
   if (CONTAINER_RUNTIME === 'docker') {
     // Docker: use -v for all mounts, add :ro suffix for readonly

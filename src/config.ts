@@ -59,3 +59,8 @@ export const TRIGGER_PATTERN = new RegExp(
 // Uses system timezone by default
 export const TIMEZONE =
   process.env.TZ || Intl.DateTimeFormat().resolvedOptions().timeZone;
+
+// RAG (Retrieval-Augmented Generation) configuration
+export const EMBED_MODEL = process.env.EMBED_MODEL ?? 'nomic-embed-text';
+export const RAG_PORT = parseInt(process.env.RAG_PORT ?? '7700', 10);
+export const RAG_SERVER_URL = process.env.RAG_SERVER_URL ?? `http://localhost:${RAG_PORT}`;

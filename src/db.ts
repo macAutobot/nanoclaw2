@@ -72,6 +72,17 @@ function createSchema(database: Database.Database): void {
       container_config TEXT,
       requires_trigger INTEGER DEFAULT 1
     );
+
+    CREATE TABLE IF NOT EXISTS rag_documents (
+      id          INTEGER PRIMARY KEY,
+      source_path TEXT    NOT NULL,
+      chunk_index INTEGER NOT NULL,
+      content     TEXT    NOT NULL,
+      embedding   BLOB    NOT NULL,
+      created_at  INTEGER DEFAULT (strftime('%s','now')),
+      UNIQUE(source_path, chunk_index)
+    );
+    CREATE INDEX IF NOT EXISTS idx_rag_source ON rag_documents(source_path);
   `);
 
   // Add context_mode column if it doesn't exist (migration for existing DBs)
@@ -581,4 +592,60 @@ function migrateJsonState(): void {
       setRegisteredGroup(jid, group);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// RAG helpers
+// ---------------------------------------------------------------------------
+
+export function upsertRagChunk(
+  sourcePath: string,
+  chunkIndex: number,
+  content: string,
+  embedding: Float32Array,
+): void {
+  const blob = Buffer.from(embedding.buffer);
+  db.prepare(`
+    INSERT INTO rag_documents (source_path, chunk_index, content, embedding)
+    VALUES (?, ?, ?, ?)
+    ON CONFLICT(source_path, chunk_index) DO UPDATE SET
+      content   = excluded.content,
+      embedding = excluded.embedding,
+      created_at = strftime('%s','now')
+  `).run(sourcePath, chunkIndex, content, blob);
+}
+
+export function deleteChunksBySource(sourcePath: string): void {
+  db.prepare(`DELETE FROM rag_documents WHERE source_path = ?`).run(sourcePath);
+}
+
+export interface RagRow {
+  id: number;
+  source_path: string;
+  content: string;
+  embedding: Float32Array;
+}
+
+export function getAllVectors(): RagRow[] {
+  const rows = db.prepare(
+    `SELECT id, source_path, content, embedding FROM rag_documents`,
+  ).all() as { id: number; source_path: string; content: string; embedding: Buffer }[];
+
+  return rows.map((r) => ({
+    id: r.id,
+    source_path: r.source_path,
+    content: r.content,
+    embedding: new Float32Array(
+      r.embedding.buffer,
+      r.embedding.byteOffset,
+      r.embedding.byteLength / 4,
+    ),
+  }));
+}
+
+export function getIndexedSources(): string[] {
+  const rows = db.prepare(
+    `SELECT DISTINCT source_path FROM rag_documents ORDER BY source_path`,
+  ).all() as { source_path: string }[];
+  return rows.map((r) => r.source_path);
 }
