@@ -36,7 +36,7 @@ import {
 import { GroupQueue } from './group-queue.js';
 import { startIpcWatcher } from './ipc.js';
 import { startRagServer } from './rag-server.js';
-import { indexFile } from './rag.js';
+import { indexFile, searchRag } from './rag.js';
 import { formatMessages, formatOutbound } from './router.js';
 import { startSchedulerLoop } from './task-scheduler.js';
 import { NewMessage, RegisteredGroup } from './types.js';
@@ -48,6 +48,56 @@ import { globalOllamaTLS } from './ollama-tls.js';
 
 // Re-export for backwards compatibility during refactor
 export { escapeXml, formatMessages } from './router.js';
+
+// ---------------------------------------------------------------------------
+// RAG context injection
+// ---------------------------------------------------------------------------
+
+const RAG_SCORE_THRESHOLD = 0.65;
+const RAG_MAX_INJECT_CHUNKS = 4;
+const RAG_MAX_CHUNK_PREVIEW = 600; // chars per chunk in injected context
+
+/**
+ * Build a <rag_context> block from the most recent user messages.
+ * Returns an empty string if RAG is unavailable, index is empty, or no
+ * results meet the score threshold — so it always fails silently.
+ */
+async function buildRagContext(messages: NewMessage[]): Promise<string> {
+  try {
+    // Use the last 2 non-empty user messages as the search query
+    const queryText = messages
+      .filter((m) => !m.is_from_me && m.content.trim())
+      .slice(-2)
+      .map((m) => m.content.trim())
+      .join(' ');
+
+    if (!queryText) return '';
+
+    const results = await searchRag(queryText, RAG_MAX_INJECT_CHUNKS + 2);
+    const relevant = results.filter((r) => r.score >= RAG_SCORE_THRESHOLD);
+    if (relevant.length === 0) return '';
+
+    const chunks = relevant
+      .slice(0, RAG_MAX_INJECT_CHUNKS)
+      .map((r) => {
+        const preview = r.content.length > RAG_MAX_CHUNK_PREVIEW
+          ? r.content.slice(0, RAG_MAX_CHUNK_PREVIEW) + '…'
+          : r.content;
+        return `[${r.source_path} | score: ${r.score.toFixed(2)}]\n${preview}`;
+      })
+      .join('\n\n');
+
+    return `<rag_context>
+The following code/docs were retrieved as relevant context for this message.
+Use them to ground your answer — cite the source paths when referencing specific code.
+
+${chunks}
+</rag_context>\n\n`;
+  } catch {
+    // RAG unavailable (Ollama down, DB not ready, etc.) — degrade silently
+    return '';
+  }
+}
 
 let lastTimestamp = '';
 let sessions: Record<string, string> = {};
@@ -149,6 +199,11 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
 
   const prompt = formatMessages(missedMessages);
 
+  // Automatically inject relevant codebase context so the agent always has
+  // grounding without needing to call rag_search explicitly.
+  const ragContext = await buildRagContext(missedMessages);
+  const promptWithContext = ragContext ? ragContext + prompt : prompt;
+
   // Advance cursor so the piping path in startMessageLoop won't re-fetch
   // these messages. Save the old cursor so we can roll back on error.
   const previousCursor = lastAgentTimestamp[chatJid] || '';
@@ -176,7 +231,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const output = await runAgent(group, prompt, chatJid, async (result) => {
+  const output = await runAgent(group, promptWithContext, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
       const raw = typeof result.result === 'string' ? result.result : JSON.stringify(result.result);
