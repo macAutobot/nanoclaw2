@@ -78,6 +78,10 @@ function buildDockerArgs(cliGroupDir, sessionId) {
     args.push('-e', `OLLAMA_MODEL=${ollamaModel}`);
   }
 
+  // RAG server — always pass so rag_search / rag_index MCP tools work
+  const ragServerUrl = process.env.RAG_SERVER_URL || 'http://host.docker.internal:7700';
+  args.push('-e', `RAG_SERVER_URL=${ragServerUrl}`);
+
   args.push(CONTAINER_IMAGE);
 
   return args;
