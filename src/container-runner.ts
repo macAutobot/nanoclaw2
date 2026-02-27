@@ -12,10 +12,10 @@ import {
   CONTAINER_MAX_OUTPUT_SIZE,
   CONTAINER_RUNTIME,
   CONTAINER_TIMEOUT,
+  CONTAINER_OLLAMA_HOST,
   DATA_DIR,
   GROUPS_DIR,
   IDLE_TIMEOUT,
-  OLLAMA_HOST,
   OLLAMA_MODEL,
 } from './config.js';
 import { logger } from './logger.js';
@@ -233,7 +233,7 @@ function buildContainerArgs(mounts: VolumeMount[], containerName: string): strin
   }
 
   // Pass Ollama environment variables to container
-  args.push('-e', `OLLAMA_HOST=${OLLAMA_HOST}`);
+  args.push('-e', `OLLAMA_HOST=${CONTAINER_OLLAMA_HOST}`);
   args.push('-e', `OLLAMA_MODEL=${OLLAMA_MODEL}`);
   args.push('-e', `RAG_SERVER_URL=${process.env.RAG_SERVER_URL ?? 'http://host.docker.internal:7700'}`);
 

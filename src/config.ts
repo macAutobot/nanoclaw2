@@ -26,8 +26,12 @@ export const AGENT_IMAGE = process.env.AGENT_IMAGE || process.env.CONTAINER_IMAG
 export const CONTAINER_IMAGE = AGENT_IMAGE;
 
 // Ollama configuration
-export const OLLAMA_HOST = process.env.OLLAMA_HOST || 'http://host.docker.internal:11434';
+// OLLAMA_HOST: used by the host process (RAG server, indexer, etc.)
+export const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'http://localhost:11434';
 export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:14b';
+// CONTAINER_OLLAMA_HOST: passed into agent containers where host resolves differently
+export const CONTAINER_OLLAMA_HOST =
+  process.env.CONTAINER_OLLAMA_HOST ?? 'http://host.docker.internal:11434';
 export const CONTAINER_TIMEOUT = parseInt(
   process.env.CONTAINER_TIMEOUT || '1800000',
   10,
