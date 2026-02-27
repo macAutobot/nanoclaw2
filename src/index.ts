@@ -53,7 +53,7 @@ export { escapeXml, formatMessages } from './router.js';
 // RAG context injection
 // ---------------------------------------------------------------------------
 
-const RAG_SCORE_THRESHOLD = 0.65;
+const RAG_SCORE_THRESHOLD = 0.55;
 const RAG_MAX_INJECT_CHUNKS = 4;
 const RAG_MAX_CHUNK_PREVIEW = 600; // chars per chunk in injected context
 
@@ -558,7 +558,7 @@ const RAG_GLOB_ROOTS: Array<{ dir: string; exts: string[] }> = [
   { dir: 'docs', exts: ['.md'] },
 ];
 
-const SKIP_DIRS_SET = new Set(['node_modules', '.git', 'dist', 'auth-store', '__pycache__']);
+const SKIP_DIRS_SET = new Set(['node_modules', '.git', 'dist', 'auth-store', '__pycache__', 'Personal_AI_Infrastructure']);
 const MAX_RAG_FILE_BYTES = 100 * 1024;
 
 function* walkRagDir(root: string, exts: string[]): Generator<string> {

@@ -181,6 +181,54 @@ export async function indexFile(
 }
 
 // ---------------------------------------------------------------------------
+// Keyword extraction (for hybrid scoring)
+// ---------------------------------------------------------------------------
+
+const STOPWORDS = new Set([
+  'a', 'an', 'the', 'and', 'or', 'but', 'if', 'so', 'as', 'it', 'its',
+  'this', 'that', 'these', 'those', 'with', 'for', 'in', 'on', 'at', 'by',
+  'to', 'of', 'is', 'are', 'was', 'were', 'be', 'been', 'being', 'have',
+  'has', 'had', 'do', 'does', 'did', 'will', 'would', 'should', 'could',
+  'can', 'may', 'might', 'shall', 'from', 'up', 'out', 'over', 'into',
+  'through', 'such', 'how', 'what', 'who', 'which', 'when', 'where', 'why',
+  'me', 'i', 'you', 'we', 'they', 'he', 'she', 'him', 'her', 'us', 'them',
+  'my', 'your', 'our', 'their', 'about', 'not', 'no', 'more', 'just',
+  // query verbs that carry no content signal
+  'tell', 'show', 'help', 'explain', 'describe', 'give', 'get', 'make',
+  'please', 'using', 'use', 'want',
+]);
+
+/**
+ * Extract meaningful keywords from a natural-language query.
+ * Returns lowercase tokens ≥ 3 chars that are not stopwords.
+ */
+function extractKeywords(query: string): string[] {
+  return query
+    .toLowerCase()
+    .split(/[^a-z0-9_-]+/)
+    .filter((t) => t.length >= 3 && !STOPWORDS.has(t));
+}
+
+/**
+ * Compute a keyword bonus score for a search result:
+ *   +0.08 per keyword found in the source_path (file/dir names)
+ *   +0.02 per unique keyword found in the content (capped at 0.10)
+ * These weights are tuned so that a file with the right name (e.g.
+ * src/ipc.ts for an "IPC" query) gets a ~0.08 lift.
+ */
+function keywordBonus(keywords: string[], sourcePath: string, content: string): number {
+  if (keywords.length === 0) return 0;
+  const pathLower = sourcePath.toLowerCase();
+  const contentLower = content.toLowerCase();
+  let bonus = 0;
+  for (const kw of keywords) {
+    if (pathLower.includes(kw)) bonus += 0.08;
+    if (contentLower.includes(kw)) bonus += 0.02;
+  }
+  return Math.min(bonus, 0.20); // cap at 0.20 total
+}
+
+// ---------------------------------------------------------------------------
 // Search
 // ---------------------------------------------------------------------------
 
@@ -191,23 +239,32 @@ export interface RagResult {
 }
 
 /**
- * Semantic search over the rag_documents table.
- * Embeds the query, loads all vectors, returns top-k by cosine similarity.
+ * Hybrid semantic + keyword search over the rag_documents table.
+ * Score = cosine_similarity + keyword_bonus (path/content term matching).
+ * This bridges the natural-language → code filename gap where pure vector
+ * similarity fails (e.g. "how does IPC work" → src/ipc.ts).
  */
 export async function searchRag(
   query: string,
   limit = 6,
 ): Promise<RagResult[]> {
-  const qVec = await embedText(query);
+  const [qVec, keywords] = await Promise.all([
+    embedText(query),
+    Promise.resolve(extractKeywords(query)),
+  ]);
   const rows = getAllVectors();
 
   if (rows.length === 0) return [];
 
-  const scored = rows.map((row) => ({
-    source_path: row.source_path,
-    content: row.content,
-    score: cosineSimilarity(qVec, row.embedding),
-  }));
+  const scored = rows.map((row) => {
+    const semantic = cosineSimilarity(qVec, row.embedding);
+    const kw = keywordBonus(keywords, row.source_path, row.content);
+    return {
+      source_path: row.source_path,
+      content: row.content,
+      score: semantic + kw,
+    };
+  });
 
   scored.sort((a, b) => b.score - a.score);
   return scored.slice(0, limit);

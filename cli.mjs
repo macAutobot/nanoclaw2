@@ -16,7 +16,7 @@ const CLI_GROUP = 'cli';
 
 // RAG server URL (host-side — not the container-internal address)
 const RAG_HOST_URL = process.env.RAG_HOST_URL || 'http://localhost:7700';
-const RAG_SCORE_THRESHOLD = 0.65;
+const RAG_SCORE_THRESHOLD = 0.55;
 const RAG_MAX_INJECT_CHUNKS = 4;
 const RAG_MAX_CHUNK_PREVIEW = 600;
 
