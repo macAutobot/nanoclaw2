@@ -14,6 +14,12 @@ const USE_OLLAMA = process.env.USE_OLLAMA === 'true';
 const GROUPS_DIR = path.resolve(process.cwd(), 'groups');
 const CLI_GROUP = 'cli';
 
+// RAG server URL (host-side — not the container-internal address)
+const RAG_HOST_URL = process.env.RAG_HOST_URL || 'http://localhost:7700';
+const RAG_SCORE_THRESHOLD = 0.65;
+const RAG_MAX_INJECT_CHUNKS = 4;
+const RAG_MAX_CHUNK_PREVIEW = 600;
+
 // Colors for terminal output
 const colors = {
   reset: '\x1b[0m',
@@ -98,9 +104,48 @@ function createContainerInput(prompt, sessionId) {
   });
 }
 
+/**
+ * Build a <rag_context> block by querying the host RAG server.
+ * Returns empty string if the server is unreachable or no results meet threshold.
+ */
+async function buildRagContext(query) {
+  try {
+    const res = await fetch(`${RAG_HOST_URL}/search`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query, limit: RAG_MAX_INJECT_CHUNKS + 2 }),
+      signal: AbortSignal.timeout(5000),
+    });
+    if (!res.ok) return '';
+    const data = await res.json();
+    const relevant = (data.results || []).filter(r => r.score >= RAG_SCORE_THRESHOLD);
+    if (relevant.length === 0) return '';
+    const chunks = relevant
+      .slice(0, RAG_MAX_INJECT_CHUNKS)
+      .map(r => {
+        const preview = r.content.length > RAG_MAX_CHUNK_PREVIEW
+          ? r.content.slice(0, RAG_MAX_CHUNK_PREVIEW) + '…'
+          : r.content;
+        return `[${r.source_path} | score: ${r.score.toFixed(2)}]\n${preview}`;
+      })
+      .join('\n\n');
+    return `<rag_context>\nThe following code/docs were retrieved as relevant context for this message.\nUse them to ground your answer — cite the source paths when referencing specific code.\n\n${chunks}\n</rag_context>\n\n`;
+  } catch {
+    // RAG server not running — degrade silently
+    return '';
+  }
+}
+
 async function runQuery(prompt, sessionId) {
   const cliGroupDir = ensureCliGroup();
   const dockerArgs = buildDockerArgs(cliGroupDir, sessionId);
+
+  // Inject RAG context — fails silently if server not running
+  const ragContext = await buildRagContext(prompt);
+  const promptWithContext = ragContext ? ragContext + prompt : prompt;
+  if (ragContext) {
+    log('  [RAG context injected]', colors.dim);
+  }
   
   return new Promise((resolve, reject) => {
     const docker = spawn('docker', dockerArgs);
@@ -166,7 +211,7 @@ async function runQuery(prompt, sessionId) {
     });
 
     // Send the input
-    const input = createContainerInput(prompt, sessionId);
+    const input = createContainerInput(promptWithContext, sessionId);
     docker.stdin.write(input);
     docker.stdin.end();
   });
