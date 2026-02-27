@@ -25,6 +25,9 @@ RUN npm install
 # Copy source code
 COPY agent-runner/ ./
 
+# Copy skills directory (even though Ollama doesn't use SDK skills, keep it for consistency)
+COPY skills/ /app/skills/
+
 # Build TypeScript (only the Ollama version)
 RUN npx tsc src/index-ollama.ts --outDir dist --module NodeNext --target ES2022 --moduleResolution NodeNext --esModuleInterop --skipLibCheck
 

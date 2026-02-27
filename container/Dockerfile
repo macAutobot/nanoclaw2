@@ -48,6 +48,9 @@ RUN npm install
 # Copy source code
 COPY agent-runner/ ./
 
+# Copy skills directory
+COPY skills/ /app/skills/
+
 # Build TypeScript
 RUN npm run build
 

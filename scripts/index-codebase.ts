@@ -28,6 +28,7 @@ const ROOTS: Array<{ dir: string; exts: string[] }> = [
 
 const SKIP_DIRS = new Set([
   'node_modules', '.git', 'dist', 'auth-store', '__pycache__',
+  'Personal_AI_Infrastructure', // unrelated external content in groups/cli/
 ]);
 const SKIP_PATH_FRAGMENTS = ['store/', 'data/sessions', '.claude'];
 const MAX_BYTES = 100 * 1024;
