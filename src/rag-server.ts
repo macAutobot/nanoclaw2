@@ -14,7 +14,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { RAG_PORT } from './config.js';
-import { getIndexedSources } from './db.js';
+import { getIndexedSources, initDatabase } from './db.js';
 import { indexFile, searchRag } from './rag.js';
 import { logger } from './logger.js';
 
@@ -193,6 +193,9 @@ async function handleRequest(
 let server: http.Server | null = null;
 
 export function startRagServer(): Promise<void> {
+  // Ensure DB is ready (safe to call multiple times — no-ops if already done)
+  initDatabase();
+
   return new Promise((resolve, reject) => {
     server = http.createServer((req, res) => {
       handleRequest(req, res).catch((err) => {
@@ -214,5 +217,20 @@ export function stopRagServer(): Promise<void> {
   return new Promise((resolve) => {
     if (!server) return resolve();
     server.close(() => resolve());
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Direct-run entry point: node --import tsx/esm src/rag-server.ts
+// ---------------------------------------------------------------------------
+
+const isDirectRun =
+  process.argv[1] &&
+  new URL(import.meta.url).pathname === new URL(`file://${process.argv[1]}`).pathname;
+
+if (isDirectRun) {
+  startRagServer().catch((err) => {
+    logger.error({ err }, '[rag-server] failed to start');
+    process.exit(1);
   });
 }
