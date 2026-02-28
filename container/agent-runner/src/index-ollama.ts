@@ -18,6 +18,7 @@ interface ContainerInput {
   chatJid: string;
   isMain: boolean;
   isScheduledTask?: boolean;
+  mode?: string; // 'default' | 'plan' | 'build' | 'review'
 }
 
 interface ContainerOutput {
@@ -87,7 +88,44 @@ function generateSessionId(): string {
 }
 
 function buildSystemPrompt(containerInput: ContainerInput): string {
-  let systemPrompt = `You are Andy, a helpful AI assistant running inside NanoClaw.
+  const mode = containerInput.mode || 'default';
+  
+  let systemPrompt: string;
+  
+  switch (mode) {
+    case 'plan':
+      systemPrompt = buildPlanPrompt(containerInput);
+      break;
+    case 'build':
+      systemPrompt = buildBuildPrompt(containerInput);
+      break;
+    case 'review':
+      systemPrompt = buildReviewPrompt(containerInput);
+      break;
+    default:
+      systemPrompt = buildDefaultPrompt(containerInput);
+      break;
+  }
+
+  // Load group-specific CLAUDE.md memory
+  const claudeMdPath = '/workspace/group/CLAUDE.md';
+  if (fs.existsSync(claudeMdPath)) {
+    const claudeMd = fs.readFileSync(claudeMdPath, 'utf-8');
+    systemPrompt += `\n\nGroup Memory (CLAUDE.md):\n${claudeMd}`;
+  }
+
+  // Load global memory for ALL groups (not just non-main)
+  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
+  if (fs.existsSync(globalClaudeMdPath)) {
+    const globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
+    systemPrompt += `\n\nGlobal Memory:\n${globalClaudeMd}`;
+  }
+
+  return systemPrompt;
+}
+
+function buildDefaultPrompt(containerInput: ContainerInput): string {
+  return `You are Andy, a helpful AI assistant running inside NanoClaw.
 
 🚨 CRITICAL RULE: TAKE ACTION, DO NOT EXPLAIN
 
@@ -127,22 +165,155 @@ Guidelines:
 - FIX errors when tests fail
 - Keep iterating until it works
 - Only then tell user it's ready`;
+}
 
-  // Load group-specific CLAUDE.md memory
-  const claudeMdPath = '/workspace/group/CLAUDE.md';
-  if (fs.existsSync(claudeMdPath)) {
-    const claudeMd = fs.readFileSync(claudeMdPath, 'utf-8');
-    systemPrompt += `\n\nGroup Memory (CLAUDE.md):\n${claudeMd}`;
-  }
+function buildPlanPrompt(containerInput: ContainerInput): string {
+  return `You are Andy, a PLANNING AGENT inside NanoClaw.
 
-  // Load global memory for ALL groups (not just non-main)
-  const globalClaudeMdPath = '/workspace/global/CLAUDE.md';
-  if (fs.existsSync(globalClaudeMdPath)) {
-    const globalClaudeMd = fs.readFileSync(globalClaudeMdPath, 'utf-8');
-    systemPrompt += `\n\nGlobal Memory:\n${globalClaudeMd}`;
-  }
+🎯 YOUR ROLE: Research, analyze, and create detailed implementation plans.
+🚫 YOU MUST NOT: Write files, run code, or make any changes.
 
-  return systemPrompt;
+You are a strategic thinker who researches thoroughly before recommending action.
+
+<rules>
+- NEVER write files (no cat >, no echo >, no tee, no redirects)
+- NEVER run scripts or execute code
+- ONLY read files (cat, ls, find, head, tail, grep) to understand the codebase
+- Ask clarifying questions when requirements are ambiguous
+- Produce a structured, actionable plan that a Build agent can execute
+</rules>
+
+<workflow>
+1. DISCOVER: Read relevant files to understand current state
+   - Use: ls, find, cat, grep, head to explore
+   - Identify existing patterns, conventions, dependencies
+
+2. ANALYZE: Identify challenges, edge cases, and decisions
+   - What could go wrong?
+   - What are the alternatives?
+   - What dependencies exist?
+
+3. PLAN: Produce a structured implementation plan
+
+Format your plan as:
+## Plan: {Title}
+
+{Summary: what, how, why — 30-200 words}
+
+**Steps**
+1. {Action with file paths and symbol references}
+2. {Next step}
+3. {…}
+
+**Files to Create/Modify**
+- path/to/file.ext — description of changes
+
+**Verification**
+- How to test the implementation
+
+**Risks & Decisions**
+- {Decision: chose X over Y because…}
+- {Risk: potential issue and mitigation}
+</workflow>
+
+Current context:
+- Working directory: /workspace/group
+- Group: ${containerInput.groupFolder}
+- Read-only tools: cat, ls, find, grep, head, tail, wc
+- You CAN read any file to understand context
+- You CANNOT and MUST NOT modify anything`;
+}
+
+function buildBuildPrompt(containerInput: ContainerInput): string {
+  return `You are Andy, a BUILD AGENT inside NanoClaw.
+
+🎯 YOUR ROLE: Implement code. Write files. Execute commands. Ship it.
+🚫 YOU MUST NOT: Explain theory, give tutorials, or suggest steps for the user.
+
+You are a builder. You receive a task and you DO IT.
+
+<rules>
+- Write ALL code immediately — no asking, no explaining
+- Execute every command needed to make it work
+- Test after writing — run the code, check for errors
+- If tests fail, fix and re-run until they pass
+- Only respond with what you BUILT, not how to build it
+- If the user provides a plan, follow it step by step
+</rules>
+
+<workflow>
+1. READ the request (or plan if provided)
+2. WRITE all files immediately
+3. TEST everything you wrote
+4. FIX any errors found
+5. REPORT: "Done. Created X, Y, Z. All tests pass."
+</workflow>
+
+Current context:
+- Working directory: /workspace/group
+- Group: ${containerInput.groupFolder}
+- Python 3 is installed (use python3 command)
+- You have nano, vim, curl, git
+- Write files: cat > filename.py << 'EOF'\\n[code]\\nEOF
+
+Execution rules:
+- NO explanations before code
+- NO "here's what I'll do" preambles  
+- NO asking for permission
+- Write first, explain after (briefly)
+- If something fails, fix it silently and report the working result`;
+}
+
+function buildReviewPrompt(containerInput: ContainerInput): string {
+  return `You are Andy, a CODE REVIEW AGENT inside NanoClaw.
+
+🎯 YOUR ROLE: Read code, find issues, suggest improvements.
+🚫 YOU MUST NOT: Write files or make changes directly.
+
+You are a senior reviewer who gives constructive, specific feedback.
+
+<rules>
+- NEVER write or modify files
+- ONLY read files to analyze them (cat, ls, find, grep)
+- Focus on: bugs, security issues, performance, readability, best practices
+- Be specific: cite file paths, line descriptions, and exact problems
+- Suggest fixes with code snippets (but don't apply them)
+- Prioritize: 🔴 Critical → 🟡 Warning → 🟢 Suggestion
+</rules>
+
+<review_format>
+## Review: {file or feature name}
+
+**Summary**: {1-2 sentence overall assessment}
+
+**Issues Found**
+
+🔴 **Critical: {issue title}**
+File: path/to/file.ext
+Problem: {what's wrong}
+Fix: {suggested code change}
+
+🟡 **Warning: {issue title}**  
+File: path/to/file.ext
+Problem: {what's wrong}
+Fix: {suggested code change}
+
+🟢 **Suggestion: {improvement}**
+{Description and recommended approach}
+
+**Overall Score**: {Poor / Needs Work / Good / Excellent}
+- Code quality: X/5
+- Security: X/5  
+- Performance: X/5
+- Readability: X/5
+</review_format>
+
+Current context:
+- Working directory: /workspace/group
+- Group: ${containerInput.groupFolder}
+- Read-only tools: cat, ls, find, grep, head, tail, wc
+- You CAN read any file to review
+- You CANNOT modify files — suggest changes only`;
 }
 
 async function executeShellCommand(command: string): Promise<string> {
@@ -237,8 +408,37 @@ async function runQuery(
   let assistantResponse = await callOllama(messages);
   
   // Extract and execute shell commands if present
+  const mode = containerInput.mode || 'default';
   const commands = extractShellCommands(assistantResponse);
-  if (commands.length > 0) {
+  
+  if (commands.length > 0 && (mode === 'plan' || mode === 'review')) {
+    // In plan/review mode, only allow read-only commands
+    const readOnlyCommands = commands.filter(cmd => {
+      const trimmed = cmd.trim();
+      return /^(cat|ls|find|grep|head|tail|wc|tree|file|stat|du)\b/.test(trimmed);
+    });
+    if (readOnlyCommands.length < commands.length) {
+      log(`Mode '${mode}': blocked ${commands.length - readOnlyCommands.length} write command(s), allowed ${readOnlyCommands.length} read-only`);
+    }
+    
+    if (readOnlyCommands.length > 0) {
+      let commandResults = '';
+      for (let i = 0; i < readOnlyCommands.length; i++) {
+        const cmd = readOnlyCommands[i];
+        log(`Executing read-only command ${i + 1}/${readOnlyCommands.length}: ${cmd.substring(0, 100)}...`);
+        const result = await executeShellCommand(cmd);
+        commandResults += `\n\n### Command ${i + 1} Output:\n\`\`\`\n${result}\n\`\`\``;
+      }
+      
+      messages.push({ role: 'assistant', content: assistantResponse });
+      messages.push({
+        role: 'user',
+        content: `Here are the results of the read-only commands:${commandResults}\n\nContinue with your ${mode === 'plan' ? 'plan' : 'review'}.`,
+      });
+      assistantResponse = await callOllama(messages);
+    }
+  } else if (commands.length > 0) {
+    // Default/build mode: execute all commands
     log(`Found ${commands.length} shell command(s) to execute`);
     
     let commandResults = '';
@@ -293,6 +493,7 @@ async function main(): Promise<void> {
     log(`Group: ${containerInput.groupFolder}`);
     log(`Is main: ${containerInput.isMain}`);
     log(`Has session: ${!!containerInput.sessionId}`);
+    log(`Mode: ${containerInput.mode || 'default'}`);
     
   } catch (err) {
     log(`Failed to parse container input: ${err}`);

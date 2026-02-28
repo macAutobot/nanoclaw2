@@ -10,14 +10,27 @@ if [ -f .env ]; then
     export $(cat .env | grep -v '^#' | xargs)
 fi
 
+# Parse wrapper flags (before passing to cli.mjs)
+KILL_RAG_ON_EXIT=false
+CLI_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --kill-rag) KILL_RAG_ON_EXIT=true ;;
+        *) CLI_ARGS+=("$arg") ;;
+    esac
+done
+
 # Get RAG port from environment or use default
 RAG_PORT="${RAG_PORT:-7700}"
+RAG_PID=""
+WE_STARTED_RAG=false
 
 # Check if RAG server is already running
 if ! lsof -Pi :$RAG_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
     echo "Starting RAG server on port $RAG_PORT..."
     node --import tsx/esm src/rag-server.ts >/dev/null 2>&1 &
     RAG_PID=$!
+    WE_STARTED_RAG=true
     
     # Wait briefly for server to start
     sleep 1
@@ -30,7 +43,20 @@ if ! lsof -Pi :$RAG_PORT -sTCP:LISTEN -t >/dev/null 2>&1; then
     fi
 else
     echo "✓ RAG server already running on port $RAG_PORT"
+    if [[ "$KILL_RAG_ON_EXIT" == true ]]; then
+        RAG_PID=$(lsof -Pi :$RAG_PORT -sTCP:LISTEN -t 2>/dev/null)
+    fi
 fi
 
+# Cleanup function
+cleanup() {
+    if [[ "$KILL_RAG_ON_EXIT" == true && -n "$RAG_PID" ]]; then
+        kill "$RAG_PID" 2>/dev/null
+        echo ""
+        echo "✓ RAG server stopped (PID: $RAG_PID)"
+    fi
+}
+trap cleanup EXIT
+
 # Run the CLI
-exec node cli.mjs "$@"
+node cli.mjs "${CLI_ARGS[@]}"

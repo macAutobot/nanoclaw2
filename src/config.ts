@@ -27,7 +27,8 @@ export const CONTAINER_IMAGE = AGENT_IMAGE;
 
 // Ollama configuration
 // OLLAMA_HOST: used by the host process (RAG server, indexer, etc.)
-export const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'http://localhost:11434';
+// Use 127.0.0.1 instead of localhost to avoid IPv6 (::1) resolution issues
+export const OLLAMA_HOST = process.env.OLLAMA_HOST ?? 'http://127.0.0.1:11434';
 export const OLLAMA_MODEL = process.env.OLLAMA_MODEL || 'qwen2.5-coder:14b';
 // CONTAINER_OLLAMA_HOST: passed into agent containers where host resolves differently
 export const CONTAINER_OLLAMA_HOST =
