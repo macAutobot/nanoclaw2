@@ -11,6 +11,8 @@ import path from 'path';
 import pino from 'pino';
 import qrcode from 'qrcode-terminal';
 import readline from 'readline';
+import * as http from 'http';
+import * as https from 'https';
 
 import {
   makeWASocket,
@@ -25,7 +27,7 @@ const QR_FILE = './store/qr-data.txt';
 const STATUS_FILE = './store/auth-status.txt';
 
 const logger = pino({
-  level: 'warn', // Quiet logging - only show errors
+  level: process.argv.includes('--verbose') ? 'debug' : 'warn',
 });
 
 // Check for --pairing-code flag and phone number
@@ -62,11 +64,19 @@ async function connectSocket(phoneNumber?: string): Promise<void> {
     printQRInTerminal: false,
     logger,
     browser: Browsers.macOS('Chrome'),
+    connectTimeoutMs: 120_000,  // 2 minutes timeout
+    defaultQueryTimeoutMs: 120_000,
+    keepAliveIntervalMs: 30_000,
+    agent: new https.Agent({
+      keepAlive: true,
+      keepAliveMsecs: 30_000,
+      timeout: 60_000,
+    }),
   });
 
   if (usePairingCode && phoneNumber && !state.creds.me) {
     // Request pairing code after a short delay for connection to initialize
-    // Only on first connect (not reconnect after 515)
+    // Only on first connect (not reconnect after 515/405)
     setTimeout(async () => {
       try {
         const code = await sock.requestPairingCode(phoneNumber!);
@@ -75,12 +85,14 @@ async function connectSocket(phoneNumber?: string): Promise<void> {
         console.log('  2. Tap Settings → Linked Devices → Link a Device');
         console.log('  3. Tap "Link with phone number instead"');
         console.log(`  4. Enter this code: ${code}\n`);
+        console.log('  ⏳ Waiting for pairing... (will reconnect automatically if needed)\n');
         fs.writeFileSync(STATUS_FILE, `pairing_code:${code}`);
       } catch (err: any) {
+        // Don't exit on pairing code request failure — connection may reconnect
         console.error('Failed to request pairing code:', err.message);
-        process.exit(1);
+        console.log('  Will retry on next connection...\n');
       }
-    }, 3000);
+    }, 5000);
   }
 
   sock.ev.on('connection.update', (update) => {
@@ -107,14 +119,17 @@ async function connectSocket(phoneNumber?: string): Promise<void> {
         fs.writeFileSync(STATUS_FILE, 'failed:qr_timeout');
         console.log('\n✗ QR code timed out. Please try again.');
         process.exit(1);
-      } else if (reason === 515) {
+      } else if (reason === 515 || reason === 405 || reason === 428) {
         // 515 = stream error, often happens after pairing succeeds but before
         // registration completes. Reconnect to finish the handshake.
-        console.log('\n⟳ Stream error (515) after pairing — reconnecting...');
-        connectSocket(phoneNumber);
+        // 405 = registration rejected (rate-limiting or pending pairing code entry)
+        // 428 = connection replaced / precondition required
+        const delay = reason === 405 ? 5000 : 2000;
+        console.log(`\n⟳ Connection interrupted (${reason}) — reconnecting in ${delay / 1000}s...`);
+        setTimeout(() => connectSocket(phoneNumber), delay);
       } else {
         fs.writeFileSync(STATUS_FILE, `failed:${reason || 'unknown'}`);
-        console.log('\n✗ Connection failed. Please try again.');
+        console.log('\n✗ Connection failed (reason: ${reason}). Please try again.');
         process.exit(1);
       }
     }
@@ -148,8 +163,17 @@ async function authenticate(): Promise<void> {
   }
 
   console.log('Starting WhatsApp authentication...\n');
-
+  
+  // Set timeout to prevent hanging forever
+  const authTimeout = setTimeout(() => {
+    console.error('\n✗ Authentication timeout (5 minutes). Please check your network and try again.');
+    process.exit(1);
+  }, 300_000);  // 5 minutes
+  
   await connectSocket(phoneNumber);
+  
+  // Clear timeout if we get here
+  clearTimeout(authTimeout);
 }
 
 authenticate().catch((err) => {

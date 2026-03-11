@@ -11,6 +11,7 @@ import readline from 'readline';
 
 const CONTAINER_IMAGE = process.env.AGENT_IMAGE || 'nanoclaw-agent:latest';
 const USE_OLLAMA = process.env.USE_OLLAMA === 'true';
+const CONTAINER_RUNTIME = process.env.CONTAINER_RUNTIME || 'container'; // 'docker' or 'container' (Apple Container)
 const GROUPS_DIR = path.resolve(process.cwd(), 'groups');
 const CLI_GROUP = 'cli';
 
@@ -72,15 +73,31 @@ function ensureCliGroup() {
   return cliGroupDir;
 }
 
-function buildDockerArgs(cliGroupDir, sessionId) {
+/**
+ * Detect the default container-internal host address for reaching the macOS host.
+ * Docker uses host.docker.internal; Apple Container VMs use the gateway 192.168.64.1.
+ */
+function containerHostAddress() {
+  return CONTAINER_RUNTIME === 'docker' ? 'host.docker.internal' : '192.168.64.1';
+}
+
+function buildContainerArgs(cliGroupDir, sessionId) {
+  const hostAddr = containerHostAddress();
+  const isDocker = CONTAINER_RUNTIME === 'docker';
   const args = [
     'run',
     '--rm',
     '-i',
     '--name', `nanoclaw-cli-${Date.now()}`,
-    '-v', `${cliGroupDir}:/workspace/group`,
-    '--add-host', 'host.docker.internal:host-gateway',
   ];
+
+  // Docker-only flags
+  if (isDocker) {
+    args.push('--add-host', 'host.docker.internal:host-gateway');
+  }
+
+  // Volume mounts — Docker uses -v, Apple Container uses --mount for ro and -v for rw
+  args.push('-v', `${cliGroupDir}:/workspace/group`);
 
   // Add session directory if exists
   const sessionDir = path.join(cliGroupDir, '.sessions');
@@ -90,14 +107,14 @@ function buildDockerArgs(cliGroupDir, sessionId) {
 
   // Add environment for Ollama if needed
   if (USE_OLLAMA) {
-    const ollamaHost = process.env.OLLAMA_HOST || 'http://host.docker.internal:11434';
+    const ollamaHost = process.env.CONTAINER_OLLAMA_HOST || `http://${hostAddr}:11434`;
     const ollamaModel = process.env.OLLAMA_MODEL || 'qwen2.5-coder:14b';
     args.push('-e', `OLLAMA_HOST=${ollamaHost}`);
     args.push('-e', `OLLAMA_MODEL=${ollamaModel}`);
   }
 
   // RAG server — always pass so rag_search / rag_index MCP tools work
-  const ragServerUrl = process.env.RAG_SERVER_URL || 'http://host.docker.internal:7700';
+  const ragServerUrl = process.env.RAG_SERVER_URL || `http://${hostAddr}:7700`;
   args.push('-e', `RAG_SERVER_URL=${ragServerUrl}`);
 
   args.push(CONTAINER_IMAGE);
@@ -189,7 +206,7 @@ async function runQuery(prompt, sessionId, mode) {
   const startTime = Date.now();
   const activeMode = mode || CURRENT_MODE;
   const cliGroupDir = ensureCliGroup();
-  const dockerArgs = buildDockerArgs(cliGroupDir, sessionId);
+  const dockerArgs = buildContainerArgs(cliGroupDir, sessionId);
   
   // Show active mode if not default
   if (activeMode !== 'default') {
@@ -224,7 +241,8 @@ async function runQuery(prompt, sessionId, mode) {
   
   return new Promise((resolve, reject) => {
     const agentStartTime = Date.now();
-    const docker = spawn('docker', dockerArgs);
+    const containerCmd = CONTAINER_RUNTIME === 'docker' ? 'docker' : 'container';
+    const docker = spawn(containerCmd, dockerArgs);
     
     let stdout = '';
     let stderr = '';
@@ -343,6 +361,7 @@ async function interactiveMode() {
   log('='.repeat(60), colors.bright);
   log('');
   logInfo(`Agent Image: ${CONTAINER_IMAGE}`);
+  logInfo(`Runtime: ${CONTAINER_RUNTIME}`);
   logInfo(`Mode: ${USE_OLLAMA ? 'Ollama (Local)' : 'Claude Agent SDK'}`);
   if (USE_OLLAMA) {
     logInfo(`Model: ${process.env.OLLAMA_MODEL || 'qwen2.5-coder:14b'}`);
@@ -588,7 +607,9 @@ if (args[0] === '-h' || args[0] === '--help') {
   log('  AGENT_IMAGE     Docker image to use (default: nanoclaw-agent:latest)', colors.dim);
   log('  USE_OLLAMA      Set to "true" for Ollama mode', colors.dim);
   log('  OLLAMA_MODEL    Ollama model to use (default: qwen2.5-coder:14b)', colors.dim);
-  log('  OLLAMA_HOST     Ollama API host (default: http://host.docker.internal:11434)', colors.dim);
+  log('  CONTAINER_RUNTIME  Container runtime: docker or container (default: container)', colors.dim);
+  log('  OLLAMA_HOST     Ollama API host on macOS (default: http://localhost:11434)', colors.dim);
+  log('  CONTAINER_OLLAMA_HOST  Ollama host inside container (auto-detected from runtime)', colors.dim);
   log('  VERBOSE         Set to "true" to always show verbose output', colors.dim);
   log('');
   process.exit(0);

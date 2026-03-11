@@ -11,9 +11,8 @@ services:
     
     # Mount Docker socket to allow container management
     # ⚠️ Docker socket mounting causes exit code 137 on Docker Desktop for Mac
-    # Running NanoClaw directly on host instead of in container
     volumes:
-      # - /Users/dizzydevil/.docker/run/docker.sock:/var/run/docker.sock
+      # - /var/run/docker.sock:/var/run/docker.sock
       - ./data:/app/data
       - ./groups:/app/groups
       - ./store:/app/store

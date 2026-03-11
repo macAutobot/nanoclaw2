@@ -25,11 +25,12 @@ RUN install -m 0755 -d /etc/apt/keyrings && \
 # Create app directory
 WORKDIR /app
 
-# Copy package files
+# Copy package files and patch script
 COPY package*.json ./
+COPY scripts/patch-baileys.sh scripts/patch-baileys.sh
 
-# Install dependencies
-RUN npm install
+# Install dependencies (postinstall will apply baileys patch)
+RUN npm install && npm rebuild better-sqlite3
 
 # Copy source code
 COPY . .

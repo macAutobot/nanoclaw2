@@ -1,0 +1,12 @@
+node_modules
+dist
+logs
+*.log
+.env
+store/auth
+store/auth-debug
+data/ipc
+data/sessions
+data/env
+.git
+.claude
